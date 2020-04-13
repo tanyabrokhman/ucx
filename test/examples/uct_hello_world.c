@@ -210,12 +210,25 @@ static void print_strings(const char *label, const char *local_str,
     fflush(stdout);
 }
 
+typedef struct uct_am_zcopy_packet {
+	pid_t			s_process_id;	//sender
+	unsigned long	s_virt_addr;	//sender
+	size_t			length;
+} uct_am_zcopy_packet_t;
+
 /* Callback to handle receive active message */
 static ucs_status_t hello_world(void *arg, void *data, size_t length,
                                 unsigned flags)
 {
     func_am_t func_am_type = *(func_am_t *)arg;
     recv_desc_t *rdesc;
+    uct_am_zcopy_packet_t *packet = (uct_am_zcopy_packet_t*)data;
+
+
+       /* suppress false positive diagnostic from uct_mm_ep_am_common_send call */
+       /* cppcheck-suppress ctunullpointer */
+       printf("%s %d %s(): Enter. sender pid=%d s_virt_addr = 0x%lx\n", __FILE__, __LINE__, __func__,
+       		packet->s_process_id, packet->s_virt_addr );
 
     print_strings("callback", func_am_t_str(func_am_type), data, length);
 

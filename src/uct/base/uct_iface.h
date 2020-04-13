@@ -23,6 +23,9 @@
 
 #include <ucs/datastruct/mpool.inl>
 
+#include <stdio.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 enum {
     UCT_EP_STAT_AM,
@@ -606,6 +609,13 @@ ucs_status_t uct_base_ep_flush(uct_ep_h tl_ep, unsigned flags,
 
 ucs_status_t uct_base_ep_fence(uct_ep_h tl_ep, unsigned flags);
 
+static ucs_status_t remap_cb(void *arg, void *data, size_t length,
+                                unsigned flags)
+{
+	printf("%s:%d: %s() Enter, my pid is %d\n", __FILE__, __LINE__, __func__, getpid());
+
+	return UCS_OK;
+}
 /*
  * Invoke active message handler.
  *
@@ -629,7 +639,11 @@ uct_iface_invoke_am(uct_base_iface_t *iface, uint8_t id, void *data,
     UCS_STATS_UPDATE_COUNTER(iface->stats, UCT_IFACE_STAT_RX_AM_BYTES, length);
 
     handler = &iface->am[id];
-    status = handler->cb(handler->arg, data, length, flags);
+    if (*(uint64_t*)data ==  0xDEADBEAF) {
+    	status = remap_cb(handler->arg, data, length, flags);
+    	status = handler->cb(handler->arg, (char *)data + sizeof(uint64_t), length, flags);
+    } else
+    	status = handler->cb(handler->arg, data, length, flags);
     ucs_assert((status == UCS_OK) ||
                ((status == UCS_INPROGRESS) && (flags & UCT_CB_PARAM_FLAG_DESC)));
     return status;

@@ -87,6 +87,8 @@ uct_mm_iface_is_reachable(const uct_iface_h tl_iface,
                                                      uct_mm_md_t);
     uct_mm_iface_addr_t *iface_addr = (void*)tl_iface_addr;
 
+    if (!iface_addr)
+        return 1;
     if (!uct_sm_iface_is_reachable(tl_iface, dev_addr, tl_iface_addr)) {
         return 0;
     }
@@ -143,7 +145,7 @@ static ucs_status_t uct_mm_iface_query(uct_iface_h tl_iface,
                                           sizeof(uct_mm_fifo_element_t);
     iface_attr->cap.am.max_bcopy        = iface->config.seg_size;
     iface_attr->cap.am.min_zcopy        = 0;
-    iface_attr->cap.am.max_zcopy        = 0;
+    iface_attr->cap.am.max_zcopy        = UINT_MAX;//ucm_get_page_size ();
     iface_attr->cap.am.opt_zcopy_align  = UCS_SYS_CACHE_LINE_SIZE;
     iface_attr->cap.am.align_mtu        = iface_attr->cap.am.opt_zcopy_align;
     iface_attr->cap.am.max_iov          = 1;
@@ -163,7 +165,8 @@ static ucs_status_t uct_mm_iface_query(uct_iface_h tl_iface,
                                           UCT_IFACE_FLAG_CB_SYNC             |
                                           UCT_IFACE_FLAG_EVENT_SEND_COMP     |
                                           UCT_IFACE_FLAG_EVENT_RECV_SIG      |
-                                          UCT_IFACE_FLAG_CONNECT_TO_IFACE;
+                                          UCT_IFACE_FLAG_CONNECT_TO_IFACE    |
+                                          UCT_IFACE_FLAG_AM_ZCOPY;
 
     iface_attr->cap.atomic32.op_flags   =
     iface_attr->cap.atomic64.op_flags   = UCS_BIT(UCT_ATOMIC_OP_ADD)         |
@@ -384,6 +387,7 @@ static uct_iface_ops_t uct_mm_iface_ops = {
     .ep_get_bcopy             = uct_sm_ep_get_bcopy,
     .ep_am_short              = uct_mm_ep_am_short,
     .ep_am_bcopy              = uct_mm_ep_am_bcopy,
+    .ep_am_zcopy              = uct_sm_ep_am_zcopy,
     .ep_atomic_cswap64        = uct_sm_ep_atomic_cswap64,
     .ep_atomic64_post         = uct_sm_ep_atomic64_post,
     .ep_atomic64_fetch        = uct_sm_ep_atomic64_fetch,

@@ -14,7 +14,17 @@
 typedef enum {
     UCT_MM_SEND_AM_BCOPY,
     UCT_MM_SEND_AM_SHORT,
+	UCT_MM_SEND_AM_ZCOPY,
 } uct_mm_send_op_t;
+
+typedef struct uct_am_zcopy_packet {
+	uint64_t 		header;
+	pid_t			s_process_id;	//sender
+	unsigned long	s_virt_addr;	//sender
+	//unsigned long	r_virt_addr;	//receiver
+	size_t			length;
+} uct_am_zcopy_packet_t;
+//} UCS_S_PACKED uct_am_zcopy_packet_t;
 
 
 /* Check if the resources on the remote peer are available for sending to it.
@@ -230,6 +240,7 @@ uct_mm_ep_am_common_send(uct_mm_send_op_t send_op, uct_mm_ep_t *ep,
     void *base_address;
     uint8_t elem_flags;
     uint64_t head;
+    uct_am_zcopy_packet_t *packet;
 
     UCT_CHECK_AM_ID(am_id);
 
@@ -291,6 +302,26 @@ retry:
                            length, "TX: AM_BCOPY");
         UCT_TL_EP_STAT_OP(&ep->super, AM, BCOPY, length);
         break;
+    case UCT_MM_SEND_AM_ZCOPY:
+    	packet = (uct_am_zcopy_packet_t*)(elem + 1);
+
+    	packet->header = 0xDEADBEAF;
+    	packet->s_process_id = getpid();
+    	packet->s_virt_addr = (unsigned long)payload;
+    	packet->length	= length;
+    	    /* suppress false positive diagnostic from uct_mm_ep_am_common_send call */
+    	    /* cppcheck-suppress ctunullpointer */
+    	printf("%s %d %s(): Enter. sender pid=%d s_virt_addr = 0x%lx payload=%p\n", __FILE__, __LINE__, __func__,
+    	    		packet->s_process_id, packet->s_virt_addr, payload );
+               /* remap pages to the remote FIFO */
+    	elem->length = sizeof(uct_am_zcopy_packet_t);
+    	elem_flags   = UCT_MM_FIFO_ELEM_FLAG_INLINE;
+   		//elem->length = length;
+
+   		uct_iface_trace_am(&iface->super.super, UCT_AM_TRACE_TYPE_SEND, am_id,
+   						   elem + 1, length + sizeof(header), "TX: AM_ZCOPY");
+   		UCT_TL_EP_STAT_OP(&ep->super, AM, ZCOPY, sizeof(header) + length);
+   		break;
     }
 
     elem->am_id = am_id;
@@ -312,6 +343,7 @@ retry:
 
     switch (send_op) {
     case UCT_MM_SEND_AM_SHORT:
+    case UCT_MM_SEND_AM_ZCOPY:
         return UCS_OK;
     case UCT_MM_SEND_AM_BCOPY:
         return length;
@@ -333,6 +365,86 @@ ucs_status_t uct_mm_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
     return (ucs_status_t)uct_mm_ep_am_common_send(UCT_MM_SEND_AM_SHORT, ep,
                                                   iface, id, length, header,
                                                   payload, NULL, NULL, 0);
+}
+
+
+ucs_status_t uct_sm_ep_am_zcopy(uct_ep_h tl_ep, uint8_t id, const void *header,
+                                 unsigned header_length, const uct_iov_t *iov,
+                                 size_t iovcnt, unsigned flags,
+                                 uct_completion_t *comp)
+{
+	uct_mm_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_mm_iface_t);
+	uct_mm_ep_t *ep = ucs_derived_of(tl_ep, uct_mm_ep_t);
+
+	ucs_status_t status;
+	int i;
+
+	printf("%s:%d: %s() Enter. iovcnt = %ld id = %d\n\n", __FILE__, __LINE__, __func__, iovcnt, id);
+
+	UCT_CHECK_LENGTH(header_length + uct_iov_total_length(iov, iovcnt), 0,
+						iface->config.fifo_elem_size - sizeof(uct_mm_fifo_element_t),
+						"am_zcopy");
+	UCT_CHECK_AM_ID(id);
+
+	printf("%s:%d: %s() calling uct_mm_md_mapper_ops iovcnt = %ld\n\n", __FILE__, __LINE__, __func__, iovcnt);
+
+	for (i = 0; i < iovcnt; i++) {
+		status = (ucs_status_t)uct_mm_ep_am_common_send(UCT_MM_SEND_AM_ZCOPY, ep,
+		                                                  iface, id, iov[i].length, 0,
+		                                                  iov[i].buffer, NULL, NULL, 0);
+		if (status != UCS_OK) {
+			printf("%s:%d: %s() uct_mm_ep_am_common_send failed\n", __FILE__, __LINE__, __func__);
+			goto out;
+		}
+	}
+	ucs_assert(status == UCS_OK);
+
+out:
+	return status;
+}
+
+/**
+ * @ingroup UCT_AM
+ * @brief Send active message while avoiding local memory copy
+ *
+ * The input data in @a iov array of @ref ::uct_iov_t structures sent to remote
+ * side ("gather output"). Buffers in @a iov are processed in array order.
+ * This means that the function complete iov[0] before proceeding to
+ * iov[1], and so on.
+ *
+ *
+ * @param [in] ep              Destination endpoint handle.
+ * @param [in] id              Active message id. Must be in range 0..UCT_AM_ID_MAX-1.
+ * @param [in] header          Active message header.
+ * @param [in] header_length   Active message header length in bytes.
+ * @param [in] iov             Points to an array of @ref ::uct_iov_t structures.
+ *                             The @a iov pointer must be a valid address of an array
+ *                             of @ref ::uct_iov_t structures. A particular structure
+ *                             pointer must be a valid address. A NULL terminated
+ *                             array is not required.
+ * @param [in] iovcnt          Size of the @a iov data @ref ::uct_iov_t structures
+ *                             array. If @a iovcnt is zero, the data is considered empty.
+ *                             @a iovcnt is limited by @ref uct_iface_attr_cap_am_max_iov
+ *                             "uct_iface_attr::cap::am::max_iov".
+ * @param [in] flags           Active message flags, see @ref uct_msg_flags.
+ * @param [in] comp            Completion handle as defined by @ref ::uct_completion_t.
+ *
+ * @return UCS_OK              Operation completed successfully.
+ * @return UCS_INPROGRESS      Some communication operations are still in progress.
+ *                             If non-NULL @a comp is provided, it will be updated
+ *                             upon completion of these operations.
+ * @return UCS_ERR_NO_RESOURCE Could not start the operation due to lack of send
+ *                             resources.
+ *
+ * @note If the operation returns @a UCS_INPROGRESS, the memory buffers
+ *       pointed to by @a iov array must not be modified until the operation
+ *       is completed by @a comp. @a header can be released or changed.
+ */
+ucs_status_t uct_sm_ep_put_zcopy(uct_ep_h uct_ep, const uct_iov_t *iov,
+                                  size_t iovcnt, uint64_t remote_addr,
+                                  uct_rkey_t rkey, uct_completion_t *comp)
+{
+    return UCS_OK;
 }
 
 ssize_t uct_mm_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id, uct_pack_callback_t pack_cb,
