@@ -1,0 +1,119 @@
+From 7abbd808bc13ff4241d0a1c332a711c336ae3ad0 Mon Sep 17 00:00:00 2001
+From: Tanya Brokhman <tanya.brokhman@huawei.com>
+Date: Thu, 16 Apr 2020 18:09:43 +0300
+Subject: [PATCH] ioctl support
+
+---
+ src/uct/base/uct_iface.h        | 37 +++++++++++++++++++++++++++++++++
+ src/uct/sm/mm/base/mm_ep.c      |  3 ++-
+ test/examples/uct_hello_world.c |  6 ++++--
+ 3 files changed, 43 insertions(+), 3 deletions(-)
+
+diff --git a/src/uct/base/uct_iface.h b/src/uct/base/uct_iface.h
+index 46f060006..788f7d85d 100644
+--- a/src/uct/base/uct_iface.h
++++ b/src/uct/base/uct_iface.h
+@@ -26,6 +26,9 @@
+ #include <stdio.h>
+ #include <sys/types.h>
+ #include <unistd.h>
++#include <stdlib.h>
++
++#include "/home/tanya/ucx/kernel_module/shuffle_module/shuffle.h"
+ 
+ enum {
+     UCT_EP_STAT_AM,
+@@ -609,11 +612,45 @@ ucs_status_t uct_base_ep_flush(uct_ep_h tl_ep, unsigned flags,
+ 
+ ucs_status_t uct_base_ep_fence(uct_ep_h tl_ep, unsigned flags);
+ 
++typedef struct uct_am_zcopy_packet {
++	uint64_t 		header;
++	pid_t			s_process_id;	//sender
++	unsigned long	s_virt_addr;	//sender
++	//unsigned long	r_virt_addr;	//receiver
++	size_t			length;
++} uct_am_zcopy_packet_t;
++
+ static ucs_status_t remap_cb(void *arg, void *data, size_t length,
+                                 unsigned flags)
+ {
++	struct shuffle_args ioctl_arg;
++	int file_desc;
++	char file_name[] = "/proc/shuffle_pages";
++
++	file_desc = open(file_name, O_RDONLY);
++	if (file_desc < 0) {
++		printf ("\n\nCan't open device file: %s\n", 
++	            file_name);
++		return UCS_OK;
++	}
++
++	uct_am_zcopy_packet_t *my_data = (uct_am_zcopy_packet_t*)data;
++	ioctl_arg.from_addr = my_data->s_virt_addr;
++	ioctl_arg.to_pid = my_data->s_process_id;
++	ioctl_arg.to_addr = (unsigned long)aligned_alloc(4096, 4096);
++	ioctl_arg.nr_pages = 1;
+ 	printf("%s:%d: %s() Enter, my pid is %d\n", __FILE__, __LINE__, __func__, getpid());
++	
++	printf("calling ioctl: from_addr = 0x%lx, to_addr= 0x%lx, length=%ld to_pid=%d\n",
++		ioctl_arg.from_addr, ioctl_arg.to_addr, my_data->length, ioctl_arg.to_pid);
++
++	if (ioctl(file_desc, SHUFFLE_IOCTL_SHUFFLE, &ioctl_arg) == -1)
++	{
++		perror("query_apps ioctl set");
++	}
++printf("ioctl done. res=%d\n", ioctl_arg.res);
+ 
++	close(file_desc); 
+ 	return UCS_OK;
+ }
+ /*
+diff --git a/src/uct/sm/mm/base/mm_ep.c b/src/uct/sm/mm/base/mm_ep.c
+index 952c4c9c3..470e8cb99 100644
+--- a/src/uct/sm/mm/base/mm_ep.c
++++ b/src/uct/sm/mm/base/mm_ep.c
+@@ -21,6 +21,7 @@ typedef enum {
+ 	UCT_MM_SEND_AM_ZCOPY,
+ } uct_mm_send_op_t;
+ 
++/*
+ typedef struct uct_am_zcopy_packet {
+ 	uint64_t 		header;
+ 	pid_t			s_process_id;	//sender
+@@ -29,7 +30,7 @@ typedef struct uct_am_zcopy_packet {
+ 	size_t			length;
+ } uct_am_zcopy_packet_t;
+ //} UCS_S_PACKED uct_am_zcopy_packet_t;
+-
++*/
+ 
+ /* Check if the resources on the remote peer are available for sending to it.
+  * i.e. check if the remote receive FIFO has room in it.
+diff --git a/test/examples/uct_hello_world.c b/test/examples/uct_hello_world.c
+index 72efd9bf2..8fc34179c 100644
+--- a/test/examples/uct_hello_world.c
++++ b/test/examples/uct_hello_world.c
+@@ -11,6 +11,7 @@
+ 
+ #include <assert.h>
+ #include <ctype.h>
++#include <stdlib.h>
+ 
+ typedef enum {
+     FUNC_AM_SHORT,
+@@ -707,8 +708,9 @@ int main(int argc, char **argv)
+     CHKERR_JUMP(UCS_OK != status, "set callback", out_free_ep);
+ 
+     if (cmd_args.server_name) {
+-        char *str = (char *)mem_type_malloc(cmd_args.test_strlen);
+-        CHKERR_ACTION(str == NULL, "allocate memory",
++       // char *str = (char *)mem_type_malloc(cmd_args.test_strlen);
++        char *str = (char *)aligned_alloc(4096, cmd_args.test_strlen);
++	CHKERR_ACTION(str == NULL, "allocate memory",
+                       status = UCS_ERR_NO_MEMORY; goto out_free_ep);
+         res = generate_test_string(str, cmd_args.test_strlen);
+         CHKERR_ACTION(res < 0, "generate test string",
+-- 
+2.17.1
+
