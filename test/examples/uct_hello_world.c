@@ -11,6 +11,7 @@
 
 #include <assert.h>
 #include <ctype.h>
+#include <stdlib.h>
 
 typedef enum {
     FUNC_AM_SHORT,
@@ -707,8 +708,9 @@ int main(int argc, char **argv)
     CHKERR_JUMP(UCS_OK != status, "set callback", out_free_ep);
 
     if (cmd_args.server_name) {
-        char *str = (char *)mem_type_malloc(cmd_args.test_strlen);
-        CHKERR_ACTION(str == NULL, "allocate memory",
+       // char *str = (char *)mem_type_malloc(cmd_args.test_strlen);
+        char *str = (char *)aligned_alloc(4096, cmd_args.test_strlen);
+	CHKERR_ACTION(str == NULL, "allocate memory",
                       status = UCS_ERR_NO_MEMORY; goto out_free_ep);
         res = generate_test_string(str, cmd_args.test_strlen);
         CHKERR_ACTION(res < 0, "generate test string",

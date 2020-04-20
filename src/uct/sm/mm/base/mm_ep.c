@@ -21,6 +21,7 @@ typedef enum {
 	UCT_MM_SEND_AM_ZCOPY,
 } uct_mm_send_op_t;
 
+/*
 typedef struct uct_am_zcopy_packet {
 	uint64_t 		header;
 	pid_t			s_process_id;	//sender
@@ -29,7 +30,7 @@ typedef struct uct_am_zcopy_packet {
 	size_t			length;
 } uct_am_zcopy_packet_t;
 //} UCS_S_PACKED uct_am_zcopy_packet_t;
-
+*/
 
 /* Check if the resources on the remote peer are available for sending to it.
  * i.e. check if the remote receive FIFO has room in it.

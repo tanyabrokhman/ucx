@@ -26,6 +26,9 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <stdlib.h>
+
+#include "/home/tanya/ucx/kernel_module/shuffle_module/shuffle.h"
 
 enum {
     UCT_EP_STAT_AM,
@@ -609,11 +612,45 @@ ucs_status_t uct_base_ep_flush(uct_ep_h tl_ep, unsigned flags,
 
 ucs_status_t uct_base_ep_fence(uct_ep_h tl_ep, unsigned flags);
 
+typedef struct uct_am_zcopy_packet {
+	uint64_t 		header;
+	pid_t			s_process_id;	//sender
+	unsigned long	s_virt_addr;	//sender
+	//unsigned long	r_virt_addr;	//receiver
+	size_t			length;
+} uct_am_zcopy_packet_t;
+
 static ucs_status_t remap_cb(void *arg, void *data, size_t length,
                                 unsigned flags)
 {
-	printf("%s:%d: %s() Enter, my pid is %d\n", __FILE__, __LINE__, __func__, getpid());
+	struct shuffle_args ioctl_arg;
+	int file_desc;
+	char file_name[] = "/proc/shuffle_pages";
 
+	file_desc = open(file_name, O_RDONLY);
+	if (file_desc < 0) {
+		printf ("\n\nCan't open device file: %s\n", 
+	            file_name);
+		return UCS_OK;
+	}
+
+	uct_am_zcopy_packet_t *my_data = (uct_am_zcopy_packet_t*)data;
+	ioctl_arg.from_addr = my_data->s_virt_addr;
+	ioctl_arg.to_pid = my_data->s_process_id;
+	ioctl_arg.to_addr = (unsigned long)aligned_alloc(4096, 4096);
+	ioctl_arg.nr_pages = 1;
+	printf("%s:%d: %s() Enter, my pid is %d\n", __FILE__, __LINE__, __func__, getpid());
+	
+	printf("calling ioctl: from_addr = 0x%lx, to_addr= 0x%lx, length=%ld to_pid=%d\n",
+		ioctl_arg.from_addr, ioctl_arg.to_addr, my_data->length, ioctl_arg.to_pid);
+
+	if (ioctl(file_desc, SHUFFLE_IOCTL_SHUFFLE, &ioctl_arg) == -1)
+	{
+		perror("query_apps ioctl set");
+	}
+printf("ioctl done. res=%d\n", ioctl_arg.res);
+
+	close(file_desc); 
 	return UCS_OK;
 }
 /*
