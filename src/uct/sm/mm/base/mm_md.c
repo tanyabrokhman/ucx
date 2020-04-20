@@ -15,6 +15,8 @@
 #include <inttypes.h>
 #include <limits.h>
 
+#include <unistd.h>
+
 
 ucs_config_field_t uct_mm_md_config_table[] = {
   {"", "", NULL,
@@ -117,7 +119,7 @@ ucs_status_t uct_mm_md_open(uct_component_t *component, const char *md_name,
         status = UCS_ERR_NO_MEMORY;
         goto err_free_mm_md;
     }
-
+printf("%s:%d:%s()[%d] Enter\n", __FILE__, __LINE__, __func__, getpid());
     status = ucs_config_parser_clone_opts(config, md->config,
                                           mmc->super.md_config.table);
     if (status != UCS_OK) {

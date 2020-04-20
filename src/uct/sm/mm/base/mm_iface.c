@@ -18,6 +18,7 @@
 #include <ucs/async/async.h>
 #include <ucs/sys/string.h>
 #include <sys/poll.h>
+#include <ucm/util/sys.h>
 
 
 /* Maximal number of events to clear from the signaling pipe in single call */
@@ -549,6 +550,7 @@ static UCS_CLASS_INIT_FUNC(uct_mm_iface_t, uct_md_h md, uct_worker_h worker,
     ucs_status_t status;
     unsigned i;
 
+    printf("%s:%d:%s()[%d] Enter\n", __FILE__, __LINE__, __func__, getpid());
     UCS_CLASS_CALL_SUPER_INIT(uct_sm_iface_t, &uct_mm_iface_ops, md,
                               worker, params, tl_config);
 
@@ -625,6 +627,25 @@ static UCS_CLASS_INIT_FUNC(uct_mm_iface_t, uct_md_h md, uct_worker_h worker,
         goto err_free_fifo;
     }
 
+    if (self->super.super.super.ops.ep_am_zcopy) {
+    	printf("%s:%d:%s()[%d] NEED TO INIT MEMPOOL FOR ZCOPY\n", __FILE__, __LINE__, __func__, getpid());
+    	/* create a memory pool for receive descriptors */
+		status = uct_iface_mpool_init(&self->super.super,
+								  &self->zcopy_pages_mp,
+								  ucm_get_page_size(),			//elem_size
+								  ucm_get_page_size(),
+								  UCS_SYS_CACHE_LINE_SIZE,
+								  &mm_config->mp,
+								  mm_config->mp.bufs_grow,
+								  uct_mm_iface_recv_desc_init,
+								  "mm_zcopy_pages");
+	    if (status != UCS_OK) {
+	        ucs_error("failed to create a zcopy pages memory pool for the MM transport");
+	        goto err_close_signal_fd;
+	    }
+	    printf("%s:%d:%s()[%d] Initialized mem pool\n", __FILE__, __LINE__, __func__, getpid());
+    }
+
     /* create a memory pool for receive descriptors */
     status = uct_iface_mpool_init(&self->super.super,
                                   &self->recv_desc_mp,
@@ -638,7 +659,7 @@ static UCS_CLASS_INIT_FUNC(uct_mm_iface_t, uct_md_h md, uct_worker_h worker,
                                   "mm_recv_desc");
     if (status != UCS_OK) {
         ucs_error("failed to create a receive descriptor memory pool for the MM transport");
-        goto err_close_signal_fd;
+        goto destroy_zcopy_mpool;
     }
 
     /* set the first receive descriptor */
@@ -673,6 +694,10 @@ destroy_descs:
     ucs_mpool_put(self->last_recv_desc);
 destroy_recv_mpool:
     ucs_mpool_cleanup(&self->recv_desc_mp, 1);
+destroy_zcopy_mpool:
+	if (self->super.super.super.ops.ep_am_zcopy) {
+		ucs_mpool_cleanup(&self->zcopy_pages_mp, 1);
+	}
 err_close_signal_fd:
     close(self->signal_fd);
 err_free_fifo:
@@ -692,6 +717,9 @@ static UCS_CLASS_CLEANUP_FUNC(uct_mm_iface_t)
 
     ucs_mpool_put(self->last_recv_desc);
     ucs_mpool_cleanup(&self->recv_desc_mp, 1);
+    if (self->super.super.super.ops.ep_am_zcopy) {
+		ucs_mpool_cleanup(&self->zcopy_pages_mp, 1);
+	}
     close(self->signal_fd);
     uct_iface_mem_free(&self->recv_fifo_mem);
     ucs_arbiter_cleanup(&self->arbiter);

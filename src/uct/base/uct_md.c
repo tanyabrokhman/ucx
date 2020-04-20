@@ -252,6 +252,7 @@ ucs_status_t uct_iface_open(uct_md_h md, uct_worker_h worker,
         return UCS_ERR_NO_DEVICE;
     }
 
+    printf("%s:%d:%s()[%d] calling tl->iface_open\n", __FILE__, __LINE__, __func__, getpid());
     return tl->iface_open(md, worker, params, config, iface_p);
 }
 

@@ -186,6 +186,8 @@ typedef struct uct_mm_iface {
     ucs_mpool_t             recv_desc_mp;
     uct_mm_recv_desc_t      *last_recv_desc;  /* next receive descriptor to use */
 
+    ucs_mpool_t             zcopy_pages_mp;
+
     int                     signal_fd;        /* Unix socket for receiving remote signal */
 
     size_t                  rx_headroom;
@@ -234,7 +236,13 @@ uct_mm_iface_invoke_am(uct_mm_iface_t *iface, uint8_t am_id, void *data,
 {
     ucs_status_t status;
     void         *desc;
+    uct_am_zcopy_packet_t *packet;
 
+    if (*(uint64_t*)data ==  0xDEADBEAF) {
+       	printf("%s:%d:%s()[%d] need to allocate mem for zpool\n", __FILE__, __LINE__, __func__, getpid());
+       	packet = (uct_am_zcopy_packet_t *)data;
+       	packet->receiver_mem = ucs_mpool_get_inline(&(iface->zcopy_pages_mp));
+    }
     status = uct_iface_invoke_am(&iface->super.super, am_id, data, length,
                                  flags);
 

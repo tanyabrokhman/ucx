@@ -28,7 +28,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 
-#include "/home/tanya/ucx/kernel_module/shuffle_module/shuffle.h"
+//#include "/home/tanya/ucx/kernel_module/shuffle_module/shuffle.h"
 
 enum {
     UCT_EP_STAT_AM,
@@ -618,11 +618,13 @@ typedef struct uct_am_zcopy_packet {
 	unsigned long	s_virt_addr;	//sender
 	//unsigned long	r_virt_addr;	//receiver
 	size_t			length;
+	void 			*receiver_mem;
 } uct_am_zcopy_packet_t;
 
-static ucs_status_t remap_cb(void *arg, void *data, size_t length,
+static ucs_status_t remap_cb(void *arg, uct_am_zcopy_packet_t *data, size_t length,
                                 unsigned flags)
 {
+#if 0
 	struct shuffle_args ioctl_arg;
 	int file_desc;
 	char file_name[] = "/proc/shuffle_pages";
@@ -651,6 +653,13 @@ static ucs_status_t remap_cb(void *arg, void *data, size_t length,
 printf("ioctl done. res=%d\n", ioctl_arg.res);
 
 	close(file_desc); 
+#else
+	void *to_addr;
+	to_addr = data->receiver_mem; //aligned_alloc(4096, 4096);
+	printf("%s() ioct data: from_addr=0x%lx, to_pid=%d, to_addr=%p\n", __func__,
+			data->s_virt_addr, data->s_process_id, to_addr);
+#endif
+
 	return UCS_OK;
 }
 /*
@@ -668,6 +677,7 @@ uct_iface_invoke_am(uct_base_iface_t *iface, uint8_t id, void *data,
 {
     ucs_status_t     status;
     uct_am_handler_t *handler;
+    uct_am_zcopy_packet_t *my_data = (uct_am_zcopy_packet_t*)data;
 
     ucs_assertv(id < UCT_AM_ID_MAX, "invalid am id: %d (max: %lu)",
                 id, UCT_AM_ID_MAX - 1);
@@ -677,8 +687,10 @@ uct_iface_invoke_am(uct_base_iface_t *iface, uint8_t id, void *data,
 
     handler = &iface->am[id];
     if (*(uint64_t*)data ==  0xDEADBEAF) {
-    	status = remap_cb(handler->arg, data, length, flags);
+    	status = remap_cb(handler->arg, my_data, length, flags);
     	status = handler->cb(handler->arg, (char *)data + sizeof(uint64_t), length, flags);
+    	/* Release the zcopy_mempool elem */
+    	ucs_mpool_put_inline(my_data->receiver_mem);
     } else
     	status = handler->cb(handler->arg, data, length, flags);
     ucs_assert((status == UCS_OK) ||

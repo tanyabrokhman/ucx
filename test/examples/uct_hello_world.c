@@ -271,6 +271,7 @@ static ucs_status_t init_iface(char *dev_name, char *tl_name,
     params.stats_root           = NULL;
     params.rx_headroom          = sizeof(recv_desc_t);
 
+    printf("%s:%d:%s()[%d] Enter\n", __FILE__, __LINE__, __func__, getpid());
     UCS_CPU_ZERO(&params.cpu_mask);
     /* Read transport-specific interface configuration */
     status = uct_md_iface_config_read(iface_p->md, tl_name, NULL, NULL, &config);
@@ -630,8 +631,10 @@ int main(int argc, char **argv)
     CHKERR_JUMP(UCS_OK != status, "get device address", out_free_if_addrs);
 
     if (cmd_args.server_name) {
+    	printf("%s:%d:%s()[%d] I'm client\n", __FILE__, __LINE__, __func__, getpid());
         oob_sock = client_connect(cmd_args.server_name, cmd_args.server_port);
     } else {
+    	printf("%s:%d:%s()[%d] I'm server\n", __FILE__, __LINE__, __func__, getpid());
         oob_sock = server_connect(cmd_args.server_port);
     }
     CHKERR_ACTION(oob_sock < 0, "OOB connect",
