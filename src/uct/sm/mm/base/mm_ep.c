@@ -18,6 +18,7 @@
 typedef enum {
     UCT_MM_SEND_AM_BCOPY,
     UCT_MM_SEND_AM_SHORT,
+    UCT_MM_SEND_AM_ZCOPY,
 } uct_mm_send_op_t;
 
 
@@ -234,6 +235,7 @@ uct_mm_ep_am_common_send(uct_mm_send_op_t send_op, uct_mm_ep_t *ep,
     void *base_address;
     uint8_t elem_flags;
     uint64_t head;
+    uct_am_zcopy_packet_t *packet;
 
     UCT_CHECK_AM_ID(am_id);
 
@@ -295,6 +297,20 @@ retry:
                            length, "TX: AM_BCOPY");
         UCT_TL_EP_STAT_OP(&ep->super, AM, BCOPY, length);
         break;
+    case UCT_MM_SEND_AM_ZCOPY:
+        packet = (uct_am_zcopy_packet_t*)(elem + 1);
+
+        packet->sender_pid = getpid();
+        packet->sender_virt_addr = (unsigned long)payload;
+        packet->length	= length;
+        /* remap pages to the remote FIFO */
+        elem->length = sizeof(uct_am_zcopy_packet_t);
+        elem_flags   = UCT_MM_FIFO_ELEM_FLAG_REMAP;
+
+        uct_iface_trace_am(&iface->super.super, UCT_AM_TRACE_TYPE_SEND, am_id,
+                        elem + 1, length + sizeof(header), "TX: AM_ZCOPY");
+        UCT_TL_EP_STAT_OP(&ep->super, AM, ZCOPY, sizeof(header) + length);
+        break;
     }
 
     elem->am_id = am_id;
@@ -316,6 +332,7 @@ retry:
 
     switch (send_op) {
     case UCT_MM_SEND_AM_SHORT:
+    case UCT_MM_SEND_AM_ZCOPY:
         return UCS_OK;
     case UCT_MM_SEND_AM_BCOPY:
         return length;
@@ -337,6 +354,27 @@ ucs_status_t uct_mm_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
     return (ucs_status_t)uct_mm_ep_am_common_send(UCT_MM_SEND_AM_SHORT, ep,
                                                   iface, id, length, header,
                                                   payload, NULL, NULL, 0);
+}
+
+ucs_status_t uct_sm_ep_am_zcopy(uct_ep_h tl_ep, uint8_t id, const void *header,
+                                 unsigned header_length, const uct_iov_t *iov,
+                                 size_t iovcnt, unsigned flags,
+                                 uct_completion_t *comp)
+{
+	uct_mm_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_mm_iface_t);
+	uct_mm_ep_t *ep = ucs_derived_of(tl_ep, uct_mm_ep_t);
+	ucs_status_t status = UCS_OK;
+	int i;
+
+	for (i = 0; i < iovcnt && status == UCS_OK; i++) {
+		status = (ucs_status_t)uct_mm_ep_am_common_send(UCT_MM_SEND_AM_ZCOPY, ep,
+		                                                  iface, id, iov[i].length, 0,
+		                                                  iov[i].buffer, NULL, NULL, 0);
+	}
+	ucs_assert(status == UCS_OK);
+
+out:
+	return status;
 }
 
 ssize_t uct_mm_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id, uct_pack_callback_t pack_cb,

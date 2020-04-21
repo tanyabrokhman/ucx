@@ -52,8 +52,8 @@ static inline void ucs_mpool_add_to_freelist(ucs_mpool_t *mp, ucs_mpool_elem_t *
         }
         mp->data->tail = elem;
     } else {
-        elem->next = mp->freelist;
-        mp->freelist = elem;
+      	elem->next = mp->freelist;
+       	mp->freelist = elem;
     }
 }
 

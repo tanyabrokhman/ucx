@@ -9,6 +9,8 @@
 #define UCT_MM_EP_H
 
 #include "mm_iface.h"
+#include <ucs/sys/iovec.h>
+#include <uct/base/uct_iov.inl>
 
 #include <ucs/datastruct/khash.h>
 
@@ -67,5 +69,9 @@ ucs_arbiter_cb_result_t uct_mm_ep_process_pending(ucs_arbiter_t *arbiter,
                                                   ucs_arbiter_group_t *group,
                                                   ucs_arbiter_elem_t *elem,
                                                   void *arg);
+ucs_status_t uct_sm_ep_am_zcopy(uct_ep_h uct_ep, uint8_t am_id, const void *header,
+                                 unsigned header_length, const uct_iov_t *iov,
+                                 size_t iovcnt, unsigned flags,
+                                 uct_completion_t *comp);
 
 #endif

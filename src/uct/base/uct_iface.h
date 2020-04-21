@@ -23,6 +23,10 @@
 
 #include <ucs/datastruct/mpool.inl>
 
+#include <stdio.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <stdlib.h>
 
 enum {
     UCT_EP_STAT_AM,
@@ -605,6 +609,19 @@ ucs_status_t uct_base_ep_flush(uct_ep_h tl_ep, unsigned flags,
                                uct_completion_t *comp);
 
 ucs_status_t uct_base_ep_fence(uct_ep_h tl_ep, unsigned flags);
+
+/**
+ * Zcopy packet, holding data for page remapping
+ */
+typedef struct uct_am_zcopy_packet {
+	uint64_t 		header;
+	/* Sender data */
+	pid_t			sender_pid;
+	uintptr_t		sender_virt_addr;
+	size_t			length;
+	/* Receiver memory to swap pages with. Filled by the receiver*/
+	void 			*receiver_mem;
+} uct_am_zcopy_packet_t;
 
 /*
  * Invoke active message handler.

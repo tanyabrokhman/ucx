@@ -23,6 +23,7 @@
 #include <ucs/stats/stats_fwd.h>
 #include <ucs/sys/compiler_def.h>
 #include <ucs/sys/topo.h>
+#include <ucs/datastruct/mpool.h>
 
 #include <sys/socket.h>
 #include <stdio.h>
@@ -2418,6 +2419,11 @@ UCT_INLINE_API void uct_iface_release_desc(void *desc)
     release_desc->cb(release_desc, desc);
 }
 
+//todo. stoped here
+UCT_INLINE_API void uct_iface_release_mem(void *desc)
+{
+    ucs_mpool_put(desc);
+}
 
 /**
  * @ingroup UCT_RMA
@@ -2610,6 +2616,10 @@ UCT_INLINE_API ucs_status_t uct_ep_am_zcopy(uct_ep_h ep, uint8_t id,
                                             unsigned flags,
                                             uct_completion_t *comp)
 {
+	if (!ep->iface->ops.ep_am_zcopy) {
+		printf("%s:%d:%s() ep_am_zcopy callback is not provided!\n", __FILE__, __LINE__, __func__);
+		return UCS_ERR_UNSUPPORTED;
+	}
     return ep->iface->ops.ep_am_zcopy(ep, id, header, header_length, iov, iovcnt,
                                       flags, comp);
 }

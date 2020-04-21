@@ -19,7 +19,11 @@ typedef enum {
 } func_am_t;
 
 typedef struct {
-    int  is_uct_desc;
+	/* 0 = data already release
+	 * 1 = this is a uct_desc. Call uct_iface_release_desc when done
+	 * 2 = this is remmaped data. Call uct_iface_release_mem when done
+	 */
+    int  delayed_rel;
 } recv_desc_t;
 
 typedef struct {
@@ -60,6 +64,7 @@ typedef struct {
 } zcopy_comp_t;
 
 static void* desc_holder = NULL;
+static void* remmaped_data = NULL;
 
 int print_err_usage(void);
 
@@ -210,20 +215,42 @@ static void print_strings(const char *label, const char *local_str,
     fflush(stdout);
 }
 
+//TODO: remove this. used here just for debug in hello_world()
+typedef struct uct_am_zcopy_packet {
+	pid_t			s_process_id;	//sender
+	unsigned long	s_virt_addr;	//sender
+	size_t			length;
+} uct_am_zcopy_packet_t;
+
 /* Callback to handle receive active message */
 static ucs_status_t hello_world(void *arg, void *data, size_t length,
                                 unsigned flags)
 {
     func_am_t func_am_type = *(func_am_t *)arg;
     recv_desc_t *rdesc;
+    uct_am_zcopy_packet_t *packet = (uct_am_zcopy_packet_t*)data;
+
+
+       /* suppress false positive diagnostic from uct_mm_ep_am_common_send call */
+       /* cppcheck-suppress ctunullpointer */
+       printf("%s %d %s(): Enter. sender pid=%d s_virt_addr = 0x%lx\n", __FILE__, __LINE__, __func__,
+       		packet->s_process_id, packet->s_virt_addr );
 
     print_strings("callback", func_am_t_str(func_am_type), data, length);
 
     if (flags & UCT_CB_PARAM_FLAG_DESC) {
         rdesc = (recv_desc_t *)data - 1;
         /* Hold descriptor to release later and return UCS_INPROGRESS */
-        rdesc->is_uct_desc = 1;
+        rdesc->delayed_rel = 1;
         desc_holder = rdesc;
+        return UCS_INPROGRESS;
+    }
+    if (flags & UCT_CB_PARAM_FLAG_REMAP) {
+        rdesc = (recv_desc_t *)data - 1;
+        //rdesc->delayed_rel = 2;
+        remmaped_data = data;
+        printf("%s %d %s(): return UCS_INPROGRESS. saved mem %p, data = %p\n", __FILE__, __LINE__, __func__,
+                     desc_holder, data);
         return UCS_INPROGRESS;
     }
 
@@ -231,7 +258,7 @@ static ucs_status_t hello_world(void *arg, void *data, size_t length,
      * outside the callback */
     rdesc = malloc(sizeof(*rdesc) + length);
     CHKERR_ACTION(rdesc == NULL, "allocate memory\n", return UCS_ERR_NO_MEMORY);
-    rdesc->is_uct_desc = 0;
+    rdesc->delayed_rel = 0;
     memcpy(rdesc + 1, data, length);
     desc_holder = rdesc;
     return UCS_OK;
@@ -694,7 +721,7 @@ int main(int argc, char **argv)
     CHKERR_JUMP(UCS_OK != status, "set callback", out_free_ep);
 
     if (cmd_args.server_name) {
-        char *str = (char *)mem_type_malloc(cmd_args.test_strlen);
+        char *str = (char *)aligned_alloc(4096, cmd_args.test_strlen);
         CHKERR_ACTION(str == NULL, "allocate memory",
                       status = UCS_ERR_NO_MEMORY; goto out_free_ep);
         res = generate_test_string(str, cmd_args.test_strlen);
@@ -715,21 +742,28 @@ int main(int argc, char **argv)
     } else {
         recv_desc_t *rdesc;
 
-        while (desc_holder == NULL) {
+        while (desc_holder == NULL && !remmaped_data) {
             /* Explicitly progress any outstanding active message requests */
             uct_worker_progress(if_info.worker);
         }
 
-        rdesc = desc_holder;
-        print_strings("main", func_am_t_str(cmd_args.func_am_type),
-                      (char *)(rdesc + 1), cmd_args.test_strlen);
+        if (remmaped_data) {
+			/* Release descriptor because callback returns UCS_INPROGRESS */
+			printf("%s:%d:%s(): Calling uct_iface_release_mem\n", __FILE__, __LINE__, __func__);
+			uct_iface_release_mem(remmaped_data);
+		} else {
+			rdesc = desc_holder;
+			print_strings("main", func_am_t_str(cmd_args.func_am_type),
+						  (char *)(rdesc + 1), cmd_args.test_strlen);
 
-        if (rdesc->is_uct_desc) {
-            /* Release descriptor because callback returns UCS_INPROGRESS */
-            uct_iface_release_desc(rdesc);
-        } else {
-            free(rdesc);
-        }
+
+			if (rdesc->delayed_rel == 1) {
+				/* Release descriptor because callback returns UCS_INPROGRESS */
+				uct_iface_release_desc(rdesc);
+			} else {
+				free(rdesc);
+			}
+		}
     }
 
     if (barrier(oob_sock)) {

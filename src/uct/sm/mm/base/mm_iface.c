@@ -18,6 +18,7 @@
 #include <ucs/async/async.h>
 #include <ucs/sys/string.h>
 #include <sys/poll.h>
+#include <ucm/util/sys.h>
 
 
 /* Maximal number of events to clear from the signaling pipe in single call */
@@ -87,6 +88,8 @@ uct_mm_iface_is_reachable(const uct_iface_h tl_iface,
                                                      uct_mm_md_t);
     uct_mm_iface_addr_t *iface_addr = (void*)tl_iface_addr;
 
+    if (!iface_addr)
+        return 1;
     if (!uct_sm_iface_is_reachable(tl_iface, dev_addr, tl_iface_addr)) {
         return 0;
     }
@@ -143,7 +146,7 @@ static ucs_status_t uct_mm_iface_query(uct_iface_h tl_iface,
                                           sizeof(uct_mm_fifo_element_t);
     iface_attr->cap.am.max_bcopy        = iface->config.seg_size;
     iface_attr->cap.am.min_zcopy        = 0;
-    iface_attr->cap.am.max_zcopy        = 0;
+    iface_attr->cap.am.max_zcopy        = UINT_MAX;
     iface_attr->cap.am.opt_zcopy_align  = UCS_SYS_CACHE_LINE_SIZE;
     iface_attr->cap.am.align_mtu        = iface_attr->cap.am.opt_zcopy_align;
     iface_attr->cap.am.max_iov          = 1;
@@ -161,7 +164,8 @@ static ucs_status_t uct_mm_iface_query(uct_iface_h tl_iface,
                                           UCT_IFACE_FLAG_AM_BCOPY            |
                                           UCT_IFACE_FLAG_PENDING             |
                                           UCT_IFACE_FLAG_CB_SYNC             |
-                                          UCT_IFACE_FLAG_CONNECT_TO_IFACE;
+                                          UCT_IFACE_FLAG_CONNECT_TO_IFACE    |
+                                          UCT_IFACE_FLAG_AM_ZCOPY;
     iface_attr->cap.event_flags         = UCT_IFACE_FLAG_EVENT_SEND_COMP     |
                                           UCT_IFACE_FLAG_EVENT_RECV_SIG      |
                                           UCT_IFACE_FLAG_EVENT_FD;
@@ -231,6 +235,15 @@ uct_mm_iface_process_recv(uct_mm_iface_t *iface,
         uct_iface_trace_am(&iface->super.super, UCT_AM_TRACE_TYPE_RECV,
                            elem->am_id, elem + 1, elem->length, "RX: AM_SHORT");
         uct_mm_iface_invoke_am(iface, elem->am_id, elem + 1, elem->length, 0);
+        return;
+    }
+
+    if (ucs_likely(elem->flags & UCT_MM_FIFO_ELEM_FLAG_REMAP)) {
+        uct_iface_trace_am(&iface->super.super, UCT_AM_TRACE_TYPE_RECV,
+                           elem->am_id, elem + 1, elem->length, "RX: AM_REMAP");
+        /* Allow the user to return INPROGRESS so that the descriptor will be returned later*/
+        uct_mm_iface_invoke_am_remap(iface, elem->am_id, elem + 1, elem->length,
+        		UCT_CB_PARAM_FLAG_REMAP);
         return;
     }
 
@@ -385,6 +398,7 @@ static uct_iface_ops_t uct_mm_iface_ops = {
     .ep_get_bcopy             = uct_sm_ep_get_bcopy,
     .ep_am_short              = uct_mm_ep_am_short,
     .ep_am_bcopy              = uct_mm_ep_am_bcopy,
+    .ep_am_zcopy              = uct_sm_ep_am_zcopy,
     .ep_atomic_cswap64        = uct_sm_ep_atomic_cswap64,
     .ep_atomic64_post         = uct_sm_ep_atomic64_post,
     .ep_atomic64_fetch        = uct_sm_ep_atomic64_fetch,
@@ -622,6 +636,38 @@ static UCS_CLASS_INIT_FUNC(uct_mm_iface_t, uct_md_h md, uct_worker_h worker,
         goto err_free_fifo;
     }
 
+    if (self->super.super.super.ops.ep_am_zcopy) {
+    	/* Check if kernel module is loaded*/
+    	FILE *fd = popen("lsmod | grep shuffle", "r");
+    	char buf[16];
+    	int loaded = 0;
+    	if (fread(buf, 1, sizeof(buf), fd) > 0 ) {
+    		loaded = 1;
+    	} else {
+    		printf("shuffle module not loaded!! Disable the ep_am_zcopy cb\n");
+    		self->super.super.super.ops.ep_am_zcopy = NULL;
+    	}
+
+    	pclose(fd);
+
+    	if (loaded) {
+			/* create a memory pool for receive descriptors */
+			status = uct_iface_mpool_init(&self->super.super,
+									  &self->zcopy_pages_mp,
+									  ucm_get_page_size(),
+									  ucm_get_page_size(),
+									  UCS_SYS_CACHE_LINE_SIZE,
+									  &mm_config->mp,
+									  mm_config->mp.bufs_grow,
+									  uct_mm_iface_recv_desc_init,
+									  "mm_zcopy_pages");
+			if (status != UCS_OK) {
+				ucs_error("failed to create a zcopy pages memory pool for the MM transport");
+				goto err_close_signal_fd;
+			}
+    	}
+    }
+
     /* create a memory pool for receive descriptors */
     status = uct_iface_mpool_init(&self->super.super,
                                   &self->recv_desc_mp,
@@ -635,7 +681,7 @@ static UCS_CLASS_INIT_FUNC(uct_mm_iface_t, uct_md_h md, uct_worker_h worker,
                                   "mm_recv_desc");
     if (status != UCS_OK) {
         ucs_error("failed to create a receive descriptor memory pool for the MM transport");
-        goto err_close_signal_fd;
+        goto destroy_zcopy_mpool;
     }
 
     /* set the first receive descriptor */
@@ -670,6 +716,10 @@ destroy_descs:
     ucs_mpool_put(self->last_recv_desc);
 destroy_recv_mpool:
     ucs_mpool_cleanup(&self->recv_desc_mp, 1);
+destroy_zcopy_mpool:
+	if (self->super.super.super.ops.ep_am_zcopy) {
+		ucs_mpool_cleanup(&self->zcopy_pages_mp, 1);
+	}
 err_close_signal_fd:
     close(self->signal_fd);
 err_free_fifo:
@@ -689,6 +739,9 @@ static UCS_CLASS_CLEANUP_FUNC(uct_mm_iface_t)
 
     ucs_mpool_put(self->last_recv_desc);
     ucs_mpool_cleanup(&self->recv_desc_mp, 1);
+    if (self->super.super.super.ops.ep_am_zcopy) {
+    	ucs_mpool_cleanup(&self->zcopy_pages_mp, 1);
+    }
     close(self->signal_fd);
     uct_iface_mem_free(&self->recv_fifo_mem);
     ucs_arbiter_cleanup(&self->arbiter);
