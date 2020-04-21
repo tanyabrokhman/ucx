@@ -310,7 +310,6 @@ retry:
     case UCT_MM_SEND_AM_ZCOPY:
     	packet = (uct_am_zcopy_packet_t*)(elem + 1);
 
-    	packet->header = 0xDEADBEAF;
     	packet->s_process_id = getpid();
     	packet->s_virt_addr = (unsigned long)payload;
     	packet->length	= length;
@@ -320,7 +319,7 @@ retry:
     	    		packet->s_process_id, packet->s_virt_addr, payload );
                /* remap pages to the remote FIFO */
     	elem->length = sizeof(uct_am_zcopy_packet_t);
-    	elem_flags   = UCT_MM_FIFO_ELEM_FLAG_INLINE;
+    	elem_flags   = UCT_MM_FIFO_ELEM_FLAG_REMAP;
    		//elem->length = length;
 
    		uct_iface_trace_am(&iface->super.super, UCT_AM_TRACE_TYPE_SEND, am_id,

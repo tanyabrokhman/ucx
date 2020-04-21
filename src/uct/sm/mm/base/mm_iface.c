@@ -237,6 +237,14 @@ uct_mm_iface_process_recv(uct_mm_iface_t *iface,
         return;
     }
 
+    if (ucs_likely(elem->flags & UCT_MM_FIFO_ELEM_FLAG_REMAP)) {
+        /* read short (inline) messages from the FIFO elements */
+        uct_iface_trace_am(&iface->super.super, UCT_AM_TRACE_TYPE_RECV,
+                           elem->am_id, elem + 1, elem->length, "RX: AM_REMAP");
+        uct_mm_iface_invoke_am_remap(iface, elem->am_id, elem + 1, elem->length, 0);
+        return;
+    }
+
     /* check the memory pool to make sure that there is a new descriptor available */
     if (ucs_unlikely(iface->last_recv_desc == NULL)) {
         UCT_TL_IFACE_GET_RX_DESC(&iface->super.super, &iface->recv_desc_mp,

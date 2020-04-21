@@ -24,6 +24,7 @@
 enum {
     UCT_MM_FIFO_ELEM_FLAG_OWNER  = UCS_BIT(0), /* new/old info */
     UCT_MM_FIFO_ELEM_FLAG_INLINE = UCS_BIT(1), /* if inline or not */
+	UCT_MM_FIFO_ELEM_FLAG_REMAP  = UCS_BIT(2), /* if the data pages should be remapped */
 };
 
 
@@ -236,13 +237,7 @@ uct_mm_iface_invoke_am(uct_mm_iface_t *iface, uint8_t am_id, void *data,
 {
     ucs_status_t status;
     void         *desc;
-    uct_am_zcopy_packet_t *packet;
 
-    if (*(uint64_t*)data ==  0xDEADBEAF) {
-       	printf("%s:%d:%s()[%d] need to allocate mem for zpool\n", __FILE__, __LINE__, __func__, getpid());
-       	packet = (uct_am_zcopy_packet_t *)data;
-       	packet->receiver_mem = ucs_mpool_get_inline(&(iface->zcopy_pages_mp));
-    }
     status = uct_iface_invoke_am(&iface->super.super, am_id, data, length,
                                  flags);
 
@@ -252,6 +247,39 @@ uct_mm_iface_invoke_am(uct_mm_iface_t *iface, uint8_t am_id, void *data,
         uct_recv_desc(desc) = &iface->release_desc;
     }
 
+    return status;
+}
+
+static UCS_F_ALWAYS_INLINE ucs_status_t
+uct_mm_iface_invoke_am_remap(uct_mm_iface_t *iface, uint8_t am_id, void *data,
+                       unsigned length, unsigned flags)
+{
+    ucs_status_t status;
+    uct_am_zcopy_packet_t *packet;
+    uct_am_handler_t *handler;
+    uct_base_iface_t *base_iface = &iface->super.super;
+
+	printf("%s:%d:%s()[%d] need to allocate mem for zpool\n", __FILE__, __LINE__, __func__, getpid());
+	packet = (uct_am_zcopy_packet_t *)data;
+	packet->receiver_mem = ucs_mpool_get_inline(&(iface->zcopy_pages_mp));
+
+    ucs_assertv(am_id < UCT_AM_ID_MAX, "invalid am id: %d (max: %lu)",
+    		am_id, UCT_AM_ID_MAX - 1);
+
+    UCS_STATS_UPDATE_COUNTER(base_iface->stats, UCT_IFACE_STAT_RX_AM, 1);
+    UCS_STATS_UPDATE_COUNTER(base_iface->stats, UCT_IFACE_STAT_RX_AM_BYTES, length);
+
+    handler = &base_iface->am[am_id];
+
+	status = remap_cb(handler->arg, packet, length, flags);
+	ucs_assert(status == UCS_OK);
+
+	status = handler->cb(handler->arg, (char *)data + sizeof(uint64_t), length, flags);
+	/* Release the zcopy_mempool elem */
+	ucs_mpool_put_inline(packet->receiver_mem);
+
+    ucs_assert((status == UCS_OK) ||
+               ((status == UCS_INPROGRESS) && (flags & UCT_CB_PARAM_FLAG_DESC)));
     return status;
 }
 
